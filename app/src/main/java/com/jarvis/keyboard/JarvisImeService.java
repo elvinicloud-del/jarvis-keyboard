@@ -1,4 +1,3 @@
-
 package com.jarvis.keyboard;
 
 import android.inputmethodservice.InputMethodService;
@@ -139,15 +138,39 @@ public class JarvisImeService extends InputMethodService {
 
             item.setOnClickListener(v -> {
                 vibrate();
-                InputConnection ic = getCurrentInputConnection();
-
-                if (ic != null) {
-                    ic.commitText(word + " ", 1);
-                }
-
+                replaceCurrentWord(word);
                 updateSuggestions();
             });
         }
+    }
+
+    private void replaceCurrentWord(String word) {
+        InputConnection ic = getCurrentInputConnection();
+        if (ic == null) return;
+
+        CharSequence before = ic.getTextBeforeCursor(100, 0);
+        int length = 0;
+
+        if (before != null) {
+            String text = before.toString();
+
+            for (int i = text.length() - 1; i >= 0; i--) {
+                char ch = text.charAt(i);
+
+                if (Character.isLetterOrDigit(ch)
+                        || ch == '\'' || ch == '’') {
+                    length++;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        if (length > 0) {
+            ic.deleteSurroundingText(length, 0);
+        }
+
+        ic.commitText(word + " ", 1);
     }
 
     private String[] getSuggestions() {
@@ -267,7 +290,7 @@ public class JarvisImeService extends InputMethodService {
         String[][] rows = {
             {"1","2","3","4","5","6","7","8","9","0"},
             {"@","#","$","%","&","-","+","(",")","/"},
-            {"*","\"","'",":",";","!","?","=","_","."}
+            {"*","\"","'",":",";","!","?","=","_", "."}
         };
 
         for (String[] values : rows) {
