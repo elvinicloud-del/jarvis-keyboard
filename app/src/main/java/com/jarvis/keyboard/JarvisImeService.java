@@ -5,6 +5,8 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.Window;
+import android.view.WindowManager;
 import android.view.inputmethod.InputConnection;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -16,9 +18,15 @@ import android.app.AlertDialog;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Vibrator;
-import android.os.VibrationEffect;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.util.Locale;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Map;
 
 public class JarvisImeService extends InputMethodService {
 
@@ -39,6 +47,8 @@ public class JarvisImeService extends InputMethodService {
 
     private SharedPreferences prefs;
 
+    private final Map<String, Integer> russianWords = new HashMap<>();
+
     private final int background = Color.rgb(12, 19, 29);
     private final int keyColor = Color.rgb(30, 43, 58);
     private final int cyan = Color.rgb(0, 210, 245);
@@ -56,6 +66,49 @@ public class JarvisImeService extends InputMethodService {
         keyboardHeight = prefs.getInt("keyboard_height", 280);
         keyHeight = prefs.getInt("key_height", 48);
         letterSize = prefs.getInt("letter_size", 17);
+
+        loadRussianDictionary();
+    }
+
+    private void loadRussianDictionary() {
+        try {
+            BufferedReader reader = new BufferedReader(
+                new InputStreamReader(
+                    getAssets().open("ru_50k.txt"),
+                    "UTF-8"
+                )
+            );
+
+            String line;
+
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+
+                if (line.isEmpty()) continue;
+
+                String[] parts = line.split("\\s+");
+
+                if (parts.length < 1) continue;
+
+                String word = parts[0].toLowerCase(new Locale("ru"));
+                int frequency = 1;
+
+                if (parts.length > 1) {
+                    try {
+                        frequency = Integer.parseInt(parts[1]);
+                    } catch (Exception ignored) {}
+                }
+
+                if (word.matches("[а-яё-]+")) {
+                    russianWords.put(word, frequency);
+                }
+            }
+
+            reader.close();
+
+        } catch (Exception e) {
+            android.util.Log.e("JARVIS", "Dictionary loading error", e);
+        }
     }
 
     @Override
@@ -97,7 +150,8 @@ public class JarvisImeService extends InputMethodService {
         title.setTextSize(12);
         title.setGravity(Gravity.CENTER);
 
-        row.addView(title, new LinearLayout.LayoutParams(0, dp(30), 1));
+        row.addView(title,
+            new LinearLayout.LayoutParams(0, dp(30), 1));
 
         TextView settings = new TextView(this);
         settings.setText("⚙");
@@ -144,6 +198,100 @@ public class JarvisImeService extends InputMethodService {
         }
     }
 
+    private String getCurrentWord() {
+        InputConnection ic = getCurrentInputConnection();
+
+        if (ic == null) return "";
+
+        CharSequence before = ic.getTextBeforeCursor(100, 0);
+
+        if (before == null || before.length() == 0) return "";
+
+        String text = before.toString();
+        int start = text.length();
+
+        while (start > 0) {
+            char c = text.charAt(start - 1);
+
+            if (Character.isLetter(c) || c == '\'' || c == '’') {
+                start--;
+            } else {
+                break;
+            }
+        }
+
+        return text.substring(start).toLowerCase(locale());
+    }
+
+    private String[] getSuggestions() {
+        String prefix = getCurrentWord();
+
+        if (prefix.isEmpty()) {
+            if (language.equals("RU")) {
+                return new String[]{"Привет", "Спасибо", "Хорошо"};
+            }
+
+            if (language.equals("AZ")) {
+                return new String[]{"Salam", "Sağ ol", "Bəli"};
+            }
+
+            return new String[]{"Hello", "Thanks", "Yes"};
+        }
+
+        if (language.equals("RU")) {
+            return getRussianSuggestions(prefix);
+        }
+
+        if (language.equals("AZ")) {
+            if (prefix.startsWith("sa")) {
+                return new String[]{"salam", "sabah", "sağ"};
+            }
+            if (prefix.startsWith("ya")) {
+                return new String[]{"yaxşı", "yardım", "yaşamaq"};
+            }
+            return new String[]{prefix, prefix + "a", prefix + "ı"};
+        }
+
+        if (prefix.startsWith("he")) {
+            return new String[]{"hello", "help", "here"};
+        }
+        if (prefix.startsWith("th")) {
+            return new String[]{"thanks", "there", "think"};
+        }
+
+        return new String[]{prefix, prefix + "s", prefix + "ing"};
+    }
+
+    private String[] getRussianSuggestions(String prefix) {
+        ArrayList<Map.Entry<String, Integer>> matches =
+            new ArrayList<>();
+
+        for (Map.Entry<String, Integer> entry : russianWords.entrySet()) {
+            if (entry.getKey().startsWith(prefix)) {
+                matches.add(entry);
+            }
+        }
+
+        Collections.sort(matches,
+            (a, b) -> Integer.compare(b.getValue(), a.getValue()));
+
+        ArrayList<String> result = new ArrayList<>();
+
+        for (int i = 0; i < matches.size() && i < 3; i++) {
+            result.add(matches.get(i).getKey());
+        }
+
+        while (result.size() < 3) {
+            if (result.isEmpty()) {
+                result.add(prefix);
+            } else {
+                result.add("");
+            }
+        }
+
+        return result.toArray(new String[0]);
+    }
+
     private void replaceCurrentWord(String word) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
@@ -171,68 +319,6 @@ public class JarvisImeService extends InputMethodService {
         }
 
         ic.commitText(word + " ", 1);
-    }
-
-    private String[] getSuggestions() {
-        InputConnection ic = getCurrentInputConnection();
-
-        if (ic == null) {
-            return new String[]{"JARVIS", "Привет", "Hello"};
-        }
-
-        CharSequence before = ic.getTextBeforeCursor(40, 0);
-
-        if (before == null || before.length() == 0) {
-            if (language.equals("RU")) {
-                return new String[]{"Привет", "Спасибо", "Хорошо"};
-            }
-
-            if (language.equals("AZ")) {
-                return new String[]{"Salam", "Sağ ol", "Bəli"};
-            }
-
-            return new String[]{"Hello", "Thanks", "Yes"};
-        }
-
-        String text = before.toString();
-        int space = text.lastIndexOf(' ');
-        String prefix = text.substring(space + 1).toLowerCase(locale());
-
-        if (prefix.isEmpty()) {
-            return new String[]{"Привет", "Hello", "Salam"};
-        }
-
-        if (language.equals("RU")) {
-            if ("пр".startsWith(prefix) || prefix.startsWith("пр")) {
-                return new String[]{"привет", "просто", "прекрасно"};
-            }
-            if (prefix.startsWith("сп")) {
-                return new String[]{"спасибо", "спокойно", "спросить"};
-            }
-            if (prefix.startsWith("хо")) {
-                return new String[]{"хорошо", "хочу", "холодно"};
-            }
-            return new String[]{prefix, prefix + "а", prefix + "и"};
-        }
-
-        if (language.equals("AZ")) {
-            if (prefix.startsWith("sa")) {
-                return new String[]{"salam", "sağ ol", "sabah"};
-            }
-            if (prefix.startsWith("ya")) {
-                return new String[]{"yaxşı", "yardım", "yaşamaq"};
-            }
-            return new String[]{prefix, prefix + "a", prefix + "ı"};
-        }
-
-        if (prefix.startsWith("he")) {
-            return new String[]{"hello", "help", "here"};
-        }
-        if (prefix.startsWith("th")) {
-            return new String[]{"thanks", "there", "think"};
-        }
-
-        return new String[]{prefix, prefix + "s", prefix + "ing"};
     }
 
     private void addLetterRows() {
@@ -335,6 +421,7 @@ public class JarvisImeService extends InputMethodService {
         space.setOnClickListener(v -> {
             vibrate();
             commit(" ");
+            updateSuggestions();
         });
 
         space.setOnLongClickListener(v -> {
@@ -384,7 +471,16 @@ public class JarvisImeService extends InputMethodService {
         key.setBackground(keyBackground());
 
         TextView main = new TextView(this);
-        main.setText(shifted ? value.toUpperCase(locale()) : value);
+
+        String displayed = value;
+
+        if (value.length() == 1 && Character.isLetter(value.charAt(0))) {
+            displayed = shifted
+                ? value.toUpperCase(locale())
+                : value.toLowerCase(locale());
+        }
+
+        main.setText(displayed);
         main.setTextColor(Color.WHITE);
         main.setTextSize(letterSize);
         main.setTypeface(Typeface.DEFAULT_BOLD);
@@ -490,9 +586,9 @@ public class JarvisImeService extends InputMethodService {
             "Длительность вибрации: " + vibrationDuration + " мс"
         };
 
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
             .setTitle("Настройки JARVIS")
-            .setItems(options, (dialog, which) -> {
+            .setItems(options, (d, which) -> {
                 switch (which) {
                     case 0:
                         showSlider("Высота клавиатуры",
@@ -539,7 +635,21 @@ public class JarvisImeService extends InputMethodService {
                 }
             })
             .setNegativeButton("Закрыть", null)
-            .show();
+            .create();
+
+        showImeDialog(dialog);
+    }
+
+    private void showImeDialog(AlertDialog dialog) {
+        Window window = dialog.getWindow();
+
+        if (window != null) {
+            window.setType(
+                WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG
+            );
+        }
+
+        dialog.show();
     }
 
     private void saveInt(String key, int value) {
@@ -600,7 +710,7 @@ public class JarvisImeService extends InputMethodService {
             }
         );
 
-        dialog.show();
+        showImeDialog(dialog);
     }
 
     private void vibrate() {
@@ -614,9 +724,9 @@ public class JarvisImeService extends InputMethodService {
 
             if (Build.VERSION.SDK_INT >= 26) {
                 vibrator.vibrate(
-                    VibrationEffect.createOneShot(
+                    android.os.VibrationEffect.createOneShot(
                         vibrationDuration,
-                        VibrationEffect.DEFAULT_AMPLITUDE
+                        android.os.VibrationEffect.DEFAULT_AMPLITUDE
                     )
                 );
             } else {
@@ -646,13 +756,15 @@ public class JarvisImeService extends InputMethodService {
 
         String selected = option;
 
-        new AlertDialog.Builder(this)
-            .setItems(new String[]{selected}, (dialog, which) ->
+        AlertDialog dialog = new AlertDialog.Builder(this)
+            .setItems(new String[]{selected}, (d, which) ->
                 commit(shifted
                     ? selected.toUpperCase(locale())
                     : selected.toLowerCase(locale()))
             )
-            .show();
+            .create();
+
+        showImeDialog(dialog);
     }
 
     private void chooseLanguage() {
@@ -662,9 +774,9 @@ public class JarvisImeService extends InputMethodService {
             "Azərbaycan"
         };
 
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
             .setTitle("Выбор языка")
-            .setItems(names, (dialog, which) -> {
+            .setItems(names, (d, which) -> {
                 language = new String[]{"RU", "EN", "AZ"}[which];
 
                 prefs.edit()
@@ -673,7 +785,9 @@ public class JarvisImeService extends InputMethodService {
 
                 refresh();
             })
-            .show();
+            .create();
+
+        showImeDialog(dialog);
     }
 
     private void changeLanguage(int direction) {
@@ -693,6 +807,7 @@ public class JarvisImeService extends InputMethodService {
 
     private void commit(String text) {
         InputConnection ic = getCurrentInputConnection();
+
         if (ic != null) {
             ic.commitText(text, 1);
         }
@@ -702,6 +817,7 @@ public class JarvisImeService extends InputMethodService {
         vibrate();
 
         InputConnection ic = getCurrentInputConnection();
+
         if (ic != null) {
             ic.deleteSurroundingText(1, 0);
         }
