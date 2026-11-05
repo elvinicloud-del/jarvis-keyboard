@@ -1,31 +1,63 @@
+
 package com.jarvis.keyboard;
 
 import android.inputmethodservice.InputMethodService;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.inputmethod.InputConnection;
-import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.SeekBar;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.app.AlertDialog;
-import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.Vibrator;
+import android.os.VibrationEffect;
 import java.util.Locale;
+import java.util.ArrayList;
 
 public class JarvisImeService extends InputMethodService {
 
     private String language = "RU";
     private boolean symbols = false;
     private boolean shifted = false;
+
+    private boolean vibrationEnabled = true;
+    private int vibrationDuration = 25;
+
+    private int keyboardHeight = 280;
+    private int keyHeight = 48;
+    private int letterSize = 17;
+
     private LinearLayout keyboard;
+    private LinearLayout suggestionsRow;
     private float spaceDownX;
+
+    private SharedPreferences prefs;
 
     private final int background = Color.rgb(12, 19, 29);
     private final int keyColor = Color.rgb(30, 43, 58);
     private final int cyan = Color.rgb(0, 210, 245);
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+
+        prefs = getSharedPreferences("jarvis_settings", MODE_PRIVATE);
+
+        language = prefs.getString("language", "RU");
+        vibrationEnabled = prefs.getBoolean("vibration", true);
+        vibrationDuration = prefs.getInt("vibration_duration", 25);
+
+        keyboardHeight = prefs.getInt("keyboard_height", 280);
+        keyHeight = prefs.getInt("key_height", 48);
+        letterSize = prefs.getInt("letter_size", 17);
+    }
 
     @Override
     public View onCreateInputView() {
@@ -38,7 +70,13 @@ public class JarvisImeService extends InputMethodService {
         keyboard.setPadding(dp(4), dp(5), dp(4), dp(5));
         keyboard.setBackgroundColor(background);
 
+        keyboard.setLayoutParams(new ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(keyboardHeight)
+        ));
+
         addHeader();
+        addSuggestions();
 
         if (symbols) {
             addSymbolRows();
@@ -47,17 +85,131 @@ public class JarvisImeService extends InputMethodService {
         }
 
         addBottomRow();
+
         return keyboard;
     }
 
     private void addHeader() {
+        LinearLayout row = makeRow();
+
         TextView title = new TextView(this);
         title.setText("J.A.R.V.I.S.");
         title.setTextColor(cyan);
         title.setTextSize(12);
         title.setGravity(Gravity.CENTER);
-        title.setPadding(0, dp(2), 0, dp(5));
-        keyboard.addView(title);
+
+        row.addView(title, new LinearLayout.LayoutParams(0, dp(30), 1));
+
+        TextView settings = new TextView(this);
+        settings.setText("⚙");
+        settings.setTextColor(cyan);
+        settings.setTextSize(19);
+        settings.setGravity(Gravity.CENTER);
+        settings.setOnClickListener(v -> showSettings());
+
+        row.addView(settings,
+            new LinearLayout.LayoutParams(dp(42), dp(30)));
+
+        keyboard.addView(row);
+    }
+
+    private void addSuggestions() {
+        suggestionsRow = makeRow();
+        keyboard.addView(suggestionsRow);
+        updateSuggestions();
+    }
+
+    private void updateSuggestions() {
+        if (suggestionsRow == null) return;
+
+        suggestionsRow.removeAllViews();
+
+        String[] suggestions = getSuggestions();
+
+        for (String word : suggestions) {
+            TextView item = new TextView(this);
+            item.setText(word);
+            item.setTextColor(Color.WHITE);
+            item.setTextSize(14);
+            item.setGravity(Gravity.CENTER);
+            item.setPadding(dp(8), dp(4), dp(8), dp(4));
+
+            suggestionsRow.addView(item,
+                new LinearLayout.LayoutParams(0, dp(32), 1));
+
+            item.setOnClickListener(v -> {
+                vibrate();
+                InputConnection ic = getCurrentInputConnection();
+
+                if (ic != null) {
+                    ic.commitText(word + " ", 1);
+                }
+
+                updateSuggestions();
+            });
+        }
+    }
+
+    private String[] getSuggestions() {
+        InputConnection ic = getCurrentInputConnection();
+
+        if (ic == null) {
+            return new String[]{"JARVIS", "Привет", "Hello"};
+        }
+
+        CharSequence before = ic.getTextBeforeCursor(40, 0);
+
+        if (before == null || before.length() == 0) {
+            if (language.equals("RU")) {
+                return new String[]{"Привет", "Спасибо", "Хорошо"};
+            }
+
+            if (language.equals("AZ")) {
+                return new String[]{"Salam", "Sağ ol", "Bəli"};
+            }
+
+            return new String[]{"Hello", "Thanks", "Yes"};
+        }
+
+        String text = before.toString();
+        int space = text.lastIndexOf(' ');
+        String prefix = text.substring(space + 1).toLowerCase(locale());
+
+        if (prefix.isEmpty()) {
+            return new String[]{"Привет", "Hello", "Salam"};
+        }
+
+        if (language.equals("RU")) {
+            if ("пр".startsWith(prefix) || prefix.startsWith("пр")) {
+                return new String[]{"привет", "просто", "прекрасно"};
+            }
+            if (prefix.startsWith("сп")) {
+                return new String[]{"спасибо", "спокойно", "спросить"};
+            }
+            if (prefix.startsWith("хо")) {
+                return new String[]{"хорошо", "хочу", "холодно"};
+            }
+            return new String[]{prefix, prefix + "а", prefix + "и"};
+        }
+
+        if (language.equals("AZ")) {
+            if (prefix.startsWith("sa")) {
+                return new String[]{"salam", "sağ ol", "sabah"};
+            }
+            if (prefix.startsWith("ya")) {
+                return new String[]{"yaxşı", "yardım", "yaşamaq"};
+            }
+            return new String[]{prefix, prefix + "a", prefix + "ı"};
+        }
+
+        if (prefix.startsWith("he")) {
+            return new String[]{"hello", "help", "here"};
+        }
+        if (prefix.startsWith("th")) {
+            return new String[]{"thanks", "there", "think"};
+        }
+
+        return new String[]{prefix, prefix + "s", prefix + "ing"};
     }
 
     private void addLetterRows() {
@@ -83,13 +235,7 @@ public class JarvisImeService extends InputMethodService {
             };
         }
 
-        String[] extras;
-
-        if (language.equals("RU")) {
-            extras = new String[]{"1234567890", "", ""};
-        } else {
-            extras = new String[]{"1234567890", "", ""};
-        }
+        String numbers = "1234567890";
 
         for (int r = 0; r < rows.length; r++) {
             LinearLayout row = makeRow();
@@ -102,8 +248,8 @@ public class JarvisImeService extends InputMethodService {
                 String letter = String.valueOf(rows[r].charAt(i));
                 String extra = "";
 
-                if (r == 0 && i < extras[0].length()) {
-                    extra = String.valueOf(extras[0].charAt(i));
+                if (r == 0 && i < numbers.length()) {
+                    extra = String.valueOf(numbers.charAt(i));
                 }
 
                 addKey(row, letter, 1, extra);
@@ -126,17 +272,21 @@ public class JarvisImeService extends InputMethodService {
 
         for (String[] values : rows) {
             LinearLayout row = makeRow();
+
             for (String value : values) {
                 addKey(row, value, 1, "");
             }
+
             keyboard.addView(row);
         }
 
         LinearLayout row = makeRow();
+
         addKey(row, "ABC", 1, "ABC");
         addKey(row, "€", 1, "");
         addKey(row, "£", 1, "");
         addKey(row, "⌫", 1, "DELETE");
+
         keyboard.addView(row);
     }
 
@@ -154,11 +304,16 @@ public class JarvisImeService extends InputMethodService {
         space.setBackground(keyBackground());
 
         LinearLayout.LayoutParams p =
-            new LinearLayout.LayoutParams(0, dp(48), 5);
+            new LinearLayout.LayoutParams(0, dp(keyHeight), 5);
+
         p.setMargins(dp(2), dp(3), dp(2), dp(3));
         row.addView(space, p);
 
-        space.setOnClickListener(v -> commit(" "));
+        space.setOnClickListener(v -> {
+            vibrate();
+            commit(" ");
+        });
+
         space.setOnLongClickListener(v -> {
             chooseLanguage();
             return true;
@@ -177,6 +332,7 @@ public class JarvisImeService extends InputMethodService {
                     return true;
                 }
             }
+
             return false;
         });
 
@@ -194,7 +350,10 @@ public class JarvisImeService extends InputMethodService {
     }
 
     private void addKey(
-        LinearLayout row, String value, int weight, String extra
+        LinearLayout row,
+        String value,
+        int weight,
+        String extra
     ) {
         LinearLayout key = new LinearLayout(this);
         key.setOrientation(LinearLayout.VERTICAL);
@@ -202,9 +361,9 @@ public class JarvisImeService extends InputMethodService {
         key.setBackground(keyBackground());
 
         TextView main = new TextView(this);
-        main.setText(shifted ? value.toUpperCase() : value);
+        main.setText(shifted ? value.toUpperCase(locale()) : value);
         main.setTextColor(Color.WHITE);
-        main.setTextSize(17);
+        main.setTextSize(letterSize);
         main.setTypeface(Typeface.DEFAULT_BOLD);
         main.setGravity(Gravity.CENTER);
 
@@ -221,7 +380,8 @@ public class JarvisImeService extends InputMethodService {
         key.addView(main);
 
         LinearLayout.LayoutParams params =
-            new LinearLayout.LayoutParams(0, dp(48), weight);
+            new LinearLayout.LayoutParams(0, dp(keyHeight), weight);
+
         params.setMargins(dp(2), dp(3), dp(2), dp(3));
         row.addView(key, params);
 
@@ -242,6 +402,7 @@ public class JarvisImeService extends InputMethodService {
             } else {
                 showAlternatives(value);
             }
+
             return true;
         });
     }
@@ -255,70 +416,238 @@ public class JarvisImeService extends InputMethodService {
     }
 
     private void press(String value) {
+        vibrate();
+
         switch (value) {
             case "⇧":
                 shifted = !shifted;
                 refresh();
                 return;
+
             case "⌫":
                 delete();
                 return;
+
             case "?123":
                 symbols = true;
                 refresh();
                 return;
+
             case "ABC":
                 symbols = false;
                 refresh();
                 return;
+
             case "↵":
                 commit("\n");
                 return;
+
             default:
                 String output = shifted
                     ? value.toUpperCase(locale())
                     : value.toLowerCase(locale());
+
                 commit(output);
+
                 if (shifted) {
                     shifted = false;
                     refresh();
                 }
+
+                updateSuggestions();
         }
     }
 
+    private void showSettings() {
+        String[] options = {
+            "Высота клавиатуры: " + keyboardHeight,
+            "Размер клавиш: " + keyHeight,
+            "Размер букв: " + letterSize,
+            "Вибрация: " + (vibrationEnabled ? "Включена" : "Выключена"),
+            "Длительность вибрации: " + vibrationDuration + " мс"
+        };
+
+        new AlertDialog.Builder(this)
+            .setTitle("Настройки JARVIS")
+            .setItems(options, (dialog, which) -> {
+                switch (which) {
+                    case 0:
+                        showSlider("Высота клавиатуры",
+                            keyboardHeight, 230, 340, " px", value -> {
+                                keyboardHeight = value;
+                                saveInt("keyboard_height", value);
+                                refresh();
+                            });
+                        break;
+
+                    case 1:
+                        showSlider("Размер клавиш",
+                            keyHeight, 38, 58, " px", value -> {
+                                keyHeight = value;
+                                saveInt("key_height", value);
+                                refresh();
+                            });
+                        break;
+
+                    case 2:
+                        showSlider("Размер букв",
+                            letterSize, 13, 24, "", value -> {
+                                letterSize = value;
+                                saveInt("letter_size", value);
+                                refresh();
+                            });
+                        break;
+
+                    case 3:
+                        vibrationEnabled = !vibrationEnabled;
+                        prefs.edit().putBoolean(
+                            "vibration", vibrationEnabled
+                        ).apply();
+                        refresh();
+                        break;
+
+                    case 4:
+                        showSlider("Длительность вибрации",
+                            vibrationDuration, 10, 80, " мс", value -> {
+                                vibrationDuration = value;
+                                saveInt("vibration_duration", value);
+                            });
+                        break;
+                }
+            })
+            .setNegativeButton("Закрыть", null)
+            .show();
+    }
+
+    private void saveInt(String key, int value) {
+        prefs.edit().putInt(key, value).apply();
+    }
+
+    private interface ValueChanged {
+        void onChange(int value);
+    }
+
+    private void showSlider(
+        String title,
+        int current,
+        int min,
+        int max,
+        String unit,
+        ValueChanged callback
+    ) {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(22), dp(15), dp(22), dp(5));
+
+        TextView valueText = new TextView(this);
+        valueText.setText(current + unit);
+        valueText.setTextSize(18);
+        valueText.setGravity(Gravity.CENTER);
+
+        SeekBar seekBar = new SeekBar(this);
+        seekBar.setMax(max - min);
+        seekBar.setProgress(current - min);
+
+        layout.addView(valueText);
+        layout.addView(seekBar);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(layout)
+            .setPositiveButton("Сохранить", (d, w) -> {
+                callback.onChange(seekBar.getProgress() + min);
+            })
+            .setNegativeButton("Отмена", null)
+            .create();
+
+        seekBar.setOnSeekBarChangeListener(
+            new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(
+                    SeekBar bar, int progress, boolean fromUser
+                ) {
+                    valueText.setText((progress + min) + unit);
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar bar) {}
+
+                @Override
+                public void onStopTrackingTouch(SeekBar bar) {}
+            }
+        );
+
+        dialog.show();
+    }
+
+    private void vibrate() {
+        if (!vibrationEnabled) return;
+
+        try {
+            Vibrator vibrator =
+                (Vibrator) getSystemService(VIBRATOR_SERVICE);
+
+            if (vibrator == null || !vibrator.hasVibrator()) return;
+
+            if (Build.VERSION.SDK_INT >= 26) {
+                vibrator.vibrate(
+                    VibrationEffect.createOneShot(
+                        vibrationDuration,
+                        VibrationEffect.DEFAULT_AMPLITUDE
+                    )
+                );
+            } else {
+                vibrator.vibrate(vibrationDuration);
+            }
+        } catch (Exception ignored) {}
+    }
+
     private void showAlternatives(String value) {
-        String options = "";
+        String option = "";
 
         if (language.equals("RU")) {
-            if (value.equals("Е")) options = "Ё";
-            if (value.equals("Ь")) options = "Ъ";
-        } else if (language.equals("AZ")) {
-            if (value.equals("I")) options = "İ";
-            if (value.equals("U")) options = "Ü";
-            if (value.equals("O")) options = "Ö";
-            if (value.equals("G")) options = "Ğ";
-            if (value.equals("S")) options = "Ş";
-            if (value.equals("C")) options = "Ç";
+            if (value.equals("Е")) option = "Ё";
+            if (value.equals("Ь")) option = "Ъ";
         }
 
-        if (options.isEmpty()) return;
+        if (language.equals("AZ")) {
+            if (value.equals("I")) option = "İ";
+            if (value.equals("U")) option = "Ü";
+            if (value.equals("O")) option = "Ö";
+            if (value.equals("G")) option = "Ğ";
+            if (value.equals("S")) option = "Ş";
+            if (value.equals("C")) option = "Ç";
+        }
 
-        final String[] choices = options.split("");
+        if (option.isEmpty()) return;
+
+        String selected = option;
+
         new AlertDialog.Builder(this)
-            .setItems(choices, (dialog, which) ->
+            .setItems(new String[]{selected}, (dialog, which) ->
                 commit(shifted
-                    ? choices[which].toUpperCase(locale())
-                    : choices[which].toLowerCase(locale())))
+                    ? selected.toUpperCase(locale())
+                    : selected.toLowerCase(locale()))
+            )
             .show();
     }
 
     private void chooseLanguage() {
-        String[] names = {"Русский", "English", "Azərbaycan"};
+        String[] names = {
+            "Русский",
+            "English",
+            "Azərbaycan"
+        };
 
         new AlertDialog.Builder(this)
             .setTitle("Выбор языка")
             .setItems(names, (dialog, which) -> {
                 language = new String[]{"RU", "EN", "AZ"}[which];
+
+                prefs.edit()
+                    .putString("language", language)
+                    .apply();
+
                 refresh();
             })
             .show();
@@ -334,17 +663,27 @@ public class JarvisImeService extends InputMethodService {
 
         index = (index + direction + 3) % 3;
         language = languages[index];
+
+        prefs.edit().putString("language", language).apply();
         refresh();
     }
 
     private void commit(String text) {
         InputConnection ic = getCurrentInputConnection();
-        if (ic != null) ic.commitText(text, 1);
+        if (ic != null) {
+            ic.commitText(text, 1);
+        }
     }
 
     private void delete() {
+        vibrate();
+
         InputConnection ic = getCurrentInputConnection();
-        if (ic != null) ic.deleteSurroundingText(1, 0);
+        if (ic != null) {
+            ic.deleteSurroundingText(1, 0);
+        }
+
+        updateSuggestions();
     }
 
     private Locale locale() {
@@ -358,7 +697,8 @@ public class JarvisImeService extends InputMethodService {
     }
 
     private int dp(int value) {
-        return (int) (value *
-            getResources().getDisplayMetrics().density);
+        return (int) (
+            value * getResources().getDisplayMetrics().density
+        );
     }
 }
