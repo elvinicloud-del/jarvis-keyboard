@@ -38,7 +38,7 @@ public class JarvisImeService extends InputMethodService {
         title.setBackgroundColor(Color.TRANSPARENT);
         keyboard.addView(title);
 
-        String[][] rows = layouts[language.equals("RU") ? 0 : 1];
+        String[] rows = layouts[language.equals("RU") ? 0 : 1];
 
         for (int r = 0; r < rows.length; r++) {
             LinearLayout row = new LinearLayout(this);
