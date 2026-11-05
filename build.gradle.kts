@@ -1,16 +1,3 @@
 plugins {
-    id("com.android.application")
-}
-
-android {
-    namespace = "com.jarvis.keyboard"
-    compileSdk = 35
-
-    defaultConfig {
-        applicationId = "com.jarvis.keyboard"
-        minSdk = 23
-        targetSdk = 28
-        versionCode = 1
-        versionName = "0.1"
-    }
+    id("com.android.application") version "8.7.3" apply false
 }
