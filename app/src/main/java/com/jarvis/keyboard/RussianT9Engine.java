@@ -3,7 +3,6 @@ package com.jarvis.keyboard;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -15,11 +14,8 @@ import java.util.TreeMap;
 public class RussianT9Engine {
 
     private final TreeMap<String, Integer> frequencies = new TreeMap<>();
-
     private final Map<String, Set<String>> deleteIndex = new HashMap<>();
-
     private final Set<String> learnedWords = new HashSet<>();
-
     private final Map<String, Set<String>> nextWords = new HashMap<>();
 
     private static final int MAX_WORD_LENGTH = 32;
@@ -28,16 +24,12 @@ public class RussianT9Engine {
         frequencies.clear();
         deleteIndex.clear();
 
-        if (dictionary == null) {
-            return;
-        }
+        if (dictionary == null) return;
 
         for (Map.Entry<String, Integer> entry : dictionary.entrySet()) {
             String word = normalize(entry.getKey());
 
-            if (!valid(word)) {
-                continue;
-            }
+            if (!valid(word)) continue;
 
             int frequency = entry.getValue() == null
                     ? 1 : Math.max(1, entry.getValue());
@@ -67,22 +59,16 @@ public class RussianT9Engine {
 
         Map<String, Integer> scores = new HashMap<>();
 
-        // 1. Быстрый поиск слов по началу.
-        // TreeMap позволяет не перебирать весь словарь.
-
+        // Быстрый поиск по префиксу через TreeMap.
         for (Map.Entry<String, Integer> entry :
                 frequencies.tailMap(query, true).entrySet()) {
 
             String word = entry.getKey();
 
-            if (!word.startsWith(query)) {
-                break;
-            }
+            if (!word.startsWith(query)) break;
 
             scores.put(word, score(word, previousWord, true));
         }
-
-        // 2. Добавляем личные слова.
 
         for (String word : learnedWords) {
             if (word.startsWith(query)) {
@@ -90,26 +76,14 @@ public class RussianT9Engine {
             }
         }
 
-        // 3. Ищем варианты с одной ошибкой.
-
+        // Поиск слов с одной опечаткой через индекс удалённых букв.
         if (query.length() >= 3) {
-            Set<String> candidates = findCandidates(query);
-
-            for (String word : candidates) {
-                if (word.equals(query)) {
-                    continue;
-                }
-
-                if (damerauDistanceAtMostOne(query, word)) {
-                    int candidateScore =
-                            score(word, previousWord, false);
-
-                    Integer oldScore = scores.get(word);
-
-                    if (oldScore == null ||
-                            candidateScore > oldScore) {
-                        scores.put(word, candidateScore);
-                    }
+            for (String word : findCandidates(query)) {
+                if (oneEditAway(query, word)) {
+                    scores.put(
+                            word,
+                            score(word, previousWord, false)
+                    );
                 }
             }
         }
@@ -117,16 +91,50 @@ public class RussianT9Engine {
         List<String> result = new ArrayList<>(scores.keySet());
 
         result.sort((a, b) -> {
-            int scoreCompare = Integer.compare(
-                    scores.get(b),
-                    scores.get(a)
+            int comparison = Integer.compare(
+                    scores.get(b), scores.get(a)
             );
 
-            if (scoreCompare != 0) {
-                return scoreCompare;
-            }
+            return comparison != 0
+                    ? comparison : a.compareTo(b);
+        });
 
-            return a.compareTo(b);
+        if (result.size() > limit) {
+            return new ArrayList<>(result.subList(0, limit));
+        }
+
+        return result;
+    }
+
+    // Отдельный поиск именно исправлений, без обычных слов-продолжений.
+    public synchronized List<String> suggestCorrections(
+            String input,
+            String previousWord,
+            int limit
+    ) {
+        String query = normalize(input);
+
+        if (!valid(query) || query.length() < 3 || limit <= 0) {
+            return Collections.emptyList();
+        }
+
+        Set<String> candidates = findCandidates(query);
+        List<String> result = new ArrayList<>();
+
+        for (String word : candidates) {
+            if (oneEditAway(query, word)) {
+                result.add(word);
+            }
+        }
+
+        result.sort((a, b) -> {
+            int comparison = Integer.compare(
+                    score(b, previousWord, false),
+                    score(a, previousWord, false)
+            );
+
+            return comparison != 0
+                    ? comparison : a.compareTo(b);
         });
 
         if (result.size() > limit) {
@@ -144,15 +152,10 @@ public class RussianT9Engine {
         int frequency = frequencies.containsKey(word)
                 ? frequencies.get(word) : 1;
 
-        int score = Math.min(100000, frequency);
+        int result = Math.min(100000, frequency);
 
-        if (prefixMatch) {
-            score += 1000000;
-        }
-
-        if (learnedWords.contains(word)) {
-            score += 500000;
-        }
+        if (prefixMatch) result += 1000000;
+        if (learnedWords.contains(word)) result += 500000;
 
         String previous = normalize(previousWord);
 
@@ -160,19 +163,17 @@ public class RussianT9Engine {
             Set<String> contextual = nextWords.get(previous);
 
             if (contextual != null && contextual.contains(word)) {
-                score += 2000000;
+                result += 2000000;
             }
         }
 
-        return score;
+        return result;
     }
 
     private Set<String> findCandidates(String input) {
         Set<String> result = new HashSet<>();
 
-        Set<String> queryDeletes = deleteVariants(input);
-
-        for (String variant : queryDeletes) {
+        for (String variant : deleteVariants(input)) {
             Set<String> words = deleteIndex.get(variant);
 
             if (words != null) {
@@ -185,18 +186,14 @@ public class RussianT9Engine {
 
     private void addToDeleteIndex(String word) {
         for (String variant : deleteVariants(word)) {
-            deleteIndex
-                    .computeIfAbsent(
-                            variant,
-                            key -> new HashSet<>()
-                    )
-                    .add(word);
+            deleteIndex.computeIfAbsent(
+                    variant, key -> new HashSet<>()
+            ).add(word);
         }
     }
 
     private Set<String> deleteVariants(String word) {
         Set<String> variants = new HashSet<>();
-
         variants.add(word);
 
         for (int i = 0; i < word.length(); i++) {
@@ -209,18 +206,10 @@ public class RussianT9Engine {
         return variants;
     }
 
-    private boolean damerauDistanceAtMostOne(
-            String first,
-            String second
-    ) {
-        if (first.equals(second)) {
-            return true;
-        }
+    private boolean oneEditAway(String first, String second) {
+        if (first.equals(second)) return false;
 
-        int lengthDifference =
-                Math.abs(first.length() - second.length());
-
-        if (lengthDifference > 1) {
+        if (Math.abs(first.length() - second.length()) > 1) {
             return false;
         }
 
@@ -237,11 +226,7 @@ public class RussianT9Engine {
 
             errors++;
 
-            if (errors > 1) {
-                return false;
-            }
-
-            // Перестановка двух соседних букв.
+            if (errors > 1) return false;
 
             if (i + 1 < first.length()
                     && j + 1 < second.length()
@@ -250,10 +235,13 @@ public class RussianT9Engine {
 
                 i += 2;
                 j += 2;
+
             } else if (first.length() > second.length()) {
                 i++;
+
             } else if (second.length() > first.length()) {
                 j++;
+
             } else {
                 i++;
                 j++;
@@ -264,18 +252,17 @@ public class RussianT9Engine {
             errors++;
         }
 
-        return errors <= 1;
+        return errors == 1;
     }
 
     public synchronized void learnWord(String word) {
         String normalized = normalize(word);
 
-        if (!valid(normalized)) {
-            return;
-        }
+        if (!valid(normalized)) return;
 
-        learnedWords.add(normalized);
-        addToDeleteIndex(normalized);
+        if (learnedWords.add(normalized)) {
+            addToDeleteIndex(normalized);
+        }
     }
 
     public synchronized void learnNextWord(
@@ -285,16 +272,11 @@ public class RussianT9Engine {
         String previous = normalize(previousWord);
         String next = normalize(nextWord);
 
-        if (!valid(previous) || !valid(next)) {
-            return;
-        }
+        if (!valid(previous) || !valid(next)) return;
 
-        nextWords
-                .computeIfAbsent(
-                        previous,
-                        key -> new HashSet<>()
-                )
-                .add(next);
+        nextWords.computeIfAbsent(
+                previous, key -> new HashSet<>()
+        ).add(next);
 
         learnWord(next);
     }
@@ -303,14 +285,10 @@ public class RussianT9Engine {
         return new HashSet<>(learnedWords);
     }
 
-    public synchronized void restoreLearnedWords(
-            Set<String> words
-    ) {
+    public synchronized void restoreLearnedWords(Set<String> words) {
         learnedWords.clear();
 
-        if (words == null) {
-            return;
-        }
+        if (words == null) return;
 
         for (String word : words) {
             String normalized = normalize(word);
@@ -327,7 +305,6 @@ public class RussianT9Engine {
 
         for (Map.Entry<String, Set<String>> entry :
                 nextWords.entrySet()) {
-
             copy.put(
                     entry.getKey(),
                     new HashSet<>(entry.getValue())
@@ -342,9 +319,7 @@ public class RussianT9Engine {
     ) {
         nextWords.clear();
 
-        if (savedWords == null) {
-            return;
-        }
+        if (savedWords == null) return;
 
         for (Map.Entry<String, Set<String>> entry :
                 savedWords.entrySet()) {
@@ -376,9 +351,7 @@ public class RussianT9Engine {
     }
 
     private String normalize(String word) {
-        if (word == null) {
-            return "";
-        }
+        if (word == null) return "";
 
         return word.trim().toLowerCase(Locale.ROOT);
     }
@@ -395,9 +368,7 @@ public class RussianT9Engine {
             boolean russian =
                     (c >= 'а' && c <= 'я') || c == 'ё';
 
-            if (!russian) {
-                return false;
-            }
+            if (!russian) return false;
         }
 
         return true;
