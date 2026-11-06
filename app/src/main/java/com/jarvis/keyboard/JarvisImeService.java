@@ -59,6 +59,9 @@ public class JarvisImeService extends InputMethodService {
     private boolean deletePressed = false;
     private boolean deleteHeld = false;
 
+    // Скорость повторного удаления
+    private int deleteRepeatInterval = 180;
+
     private final int background = Color.rgb(12, 19, 29);
     private final int keyColor = Color.rgb(30, 43, 58);
     private final int cyan = Color.rgb(0, 210, 245);
@@ -70,7 +73,14 @@ public class JarvisImeService extends InputMethodService {
 
             deleteHeld = true;
             deleteOne(false);
-            handler.postDelayed(this, 65);
+
+            handler.postDelayed(this, deleteRepeatInterval);
+
+            // Постепенно ускоряем удаление
+            deleteRepeatInterval = Math.max(
+                45,
+                deleteRepeatInterval - 20
+            );
         }
     };
 
@@ -377,7 +387,8 @@ public class JarvisImeService extends InputMethodService {
             ic.deleteSurroundingText(length, 0);
         }
 
-        ic.commitText(word + " ", 1);
+        // Вставляем слово без автоматического пробела
+        ic.commitText(word, 1);
     }
 
     private void addLetterRows() {
@@ -575,10 +586,11 @@ public class JarvisImeService extends InputMethodService {
                     case MotionEvent.ACTION_DOWN:
                         deletePressed = true;
                         deleteHeld = false;
+                        deleteRepeatInterval = 180;
                         vibrate();
 
                         handler.removeCallbacks(deleteRunnable);
-                        handler.postDelayed(deleteRunnable, 400);
+                        handler.postDelayed(deleteRunnable, 450);
                         return true;
 
                     case MotionEvent.ACTION_UP:
@@ -628,6 +640,11 @@ public class JarvisImeService extends InputMethodService {
         return bg;
     }
 
+    // Проверяем, является ли символ знаком препинания
+    private boolean isPunctuation(char c) {
+        return ",.!?:;".indexOf(c) >= 0;
+    }
+
     private void press(String value) {
         vibrate();
 
@@ -657,10 +674,40 @@ public class JarvisImeService extends InputMethodService {
                 return;
 
             default:
-                if (value.equals(",") || value.equals(".")
-                        || value.equals("!") || value.equals("?")
-                        || value.equals(":") || value.equals(";")) {
-                    commit(value + " ");
+                if (isPunctuation(value.charAt(0))) {
+                    InputConnection ic = getCurrentInputConnection();
+
+                    if (ic != null) {
+                        CharSequence before =
+                            ic.getTextBeforeCursor(2, 0);
+
+                        String previous =
+                            before == null ? "" : before.toString();
+
+                        if (previous.endsWith(" ")
+                                && previous.length() >= 2
+                                && isPunctuation(
+                                    previous.charAt(previous.length() - 2)
+                                )) {
+
+                            // Убираем пробел после предыдущего знака
+                            ic.deleteSurroundingText(1, 0);
+                            ic.commitText(value, 1);
+
+                        } else if (!previous.isEmpty()
+                                && isPunctuation(
+                                    previous.charAt(previous.length() - 1)
+                                )) {
+
+                            // Не ставим пробел между знаками
+                            ic.commitText(value, 1);
+
+                        } else {
+                            // После одиночного знака ставим пробел
+                            ic.commitText(value + " ", 1);
+                        }
+                    }
+
                     updateSuggestions();
                     return;
                 }
@@ -668,6 +715,20 @@ public class JarvisImeService extends InputMethodService {
                 String output = shifted
                     ? value.toUpperCase(locale())
                     : value.toLowerCase(locale());
+
+                // Если после группы знаков нет пробела,
+                // добавляем его перед следующей буквой
+                InputConnection ic = getCurrentInputConnection();
+
+                if (ic != null) {
+                    CharSequence before =
+                        ic.getTextBeforeCursor(1, 0);
+
+                    if (before != null && before.length() > 0
+                            && isPunctuation(before.charAt(0))) {
+                        output = " " + output;
+                    }
+                }
 
                 commit(output);
 
