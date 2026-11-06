@@ -1,3 +1,4 @@
+
 package com.jarvis.keyboard;
 
 import android.inputmethodservice.InputMethodService;
@@ -18,6 +19,9 @@ import android.app.AlertDialog;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Vibrator;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -25,8 +29,8 @@ import java.util.Locale;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.TreeMap;
 
 public class JarvisImeService extends InputMethodService {
 
@@ -37,78 +41,112 @@ public class JarvisImeService extends InputMethodService {
     private boolean vibrationEnabled = true;
     private int vibrationDuration = 25;
 
-    private int keyboardHeight = 280;
-    private int keyHeight = 48;
-    private int letterSize = 17;
+    private int keyboardHeight = 340;
+    private int keyHeight = 58;
+    private int letterSize = 20;
 
     private LinearLayout keyboard;
     private LinearLayout suggestionsRow;
-    private float spaceDownX;
 
     private SharedPreferences prefs;
 
-    private final Map<String, Integer> russianWords = new HashMap<>();
+    private final TreeMap<String, Integer> russianWords =
+        new TreeMap<>();
+
+    private volatile boolean dictionaryLoaded = false;
+
+    private final Handler handler =
+        new Handler(Looper.getMainLooper());
+
+    private boolean deleteRepeating = false;
+    private boolean deleteHeld = false;
 
     private final int background = Color.rgb(12, 19, 29);
     private final int keyColor = Color.rgb(30, 43, 58);
     private final int cyan = Color.rgb(0, 210, 245);
 
+    private final Runnable deleteRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!deleteRepeating) return;
+
+            deleteOne();
+            handler.postDelayed(this, 65);
+        }
+    };
+
     @Override
     public void onCreate() {
         super.onCreate();
 
-        prefs = getSharedPreferences("jarvis_settings", MODE_PRIVATE);
+        prefs = getSharedPreferences(
+            "jarvis_settings", MODE_PRIVATE
+        );
 
         language = prefs.getString("language", "RU");
         vibrationEnabled = prefs.getBoolean("vibration", true);
         vibrationDuration = prefs.getInt("vibration_duration", 25);
 
-        keyboardHeight = prefs.getInt("keyboard_height", 280);
-        keyHeight = prefs.getInt("key_height", 48);
-        letterSize = prefs.getInt("letter_size", 17);
+        keyboardHeight = prefs.getInt("keyboard_height", 340);
+        keyHeight = prefs.getInt("key_height", 58);
+        letterSize = prefs.getInt("letter_size", 20);
 
-        loadRussianDictionary();
+        loadRussianDictionaryInBackground();
     }
 
-    private void loadRussianDictionary() {
-        try {
-            BufferedReader reader = new BufferedReader(
-                new InputStreamReader(
-                    getAssets().open("ru_50k.txt"),
-                    "UTF-8"
-                )
-            );
+    private void loadRussianDictionaryInBackground() {
+        new Thread(() -> {
+            TreeMap<String, Integer> loaded = new TreeMap<>();
 
-            String line;
+            try {
+                BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(
+                        getAssets().open("ru_50k.txt"),
+                        "UTF-8"
+                    )
+                );
 
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
+                String line;
 
-                if (line.isEmpty()) continue;
+                while ((line = reader.readLine()) != null) {
+                    line = line.trim();
 
-                String[] parts = line.split("\\s+");
+                    if (line.isEmpty()) continue;
 
-                if (parts.length < 1) continue;
+                    String[] parts = line.split("\\s+");
 
-                String word = parts[0].toLowerCase(new Locale("ru"));
-                int frequency = 1;
+                    String word = parts[0].toLowerCase(
+                        new Locale("ru")
+                    );
 
-                if (parts.length > 1) {
-                    try {
-                        frequency = Integer.parseInt(parts[1]);
-                    } catch (Exception ignored) {}
+                    int frequency = 1;
+
+                    if (parts.length > 1) {
+                        try {
+                            frequency = Integer.parseInt(parts[1]);
+                        } catch (Exception ignored) {}
+                    }
+
+                    if (word.matches("[а-яё-]+")) {
+                        loaded.put(word, frequency);
+                    }
                 }
 
-                if (word.matches("[а-яё-]+")) {
-                    russianWords.put(word, frequency);
-                }
+                reader.close();
+
+            } catch (Exception e) {
+                Log.e("JARVIS", "Dictionary loading error", e);
             }
 
-            reader.close();
+            synchronized (russianWords) {
+                russianWords.putAll(loaded);
+            }
 
-        } catch (Exception e) {
-            android.util.Log.e("JARVIS", "Dictionary loading error", e);
-        }
+            dictionaryLoaded = true;
+
+            handler.post(() -> updateSuggestions());
+
+        }).start();
     }
 
     @Override
@@ -183,14 +221,16 @@ public class JarvisImeService extends InputMethodService {
             TextView item = new TextView(this);
             item.setText(word);
             item.setTextColor(Color.WHITE);
-            item.setTextSize(14);
+            item.setTextSize(15);
             item.setGravity(Gravity.CENTER);
             item.setPadding(dp(8), dp(4), dp(8), dp(4));
 
             suggestionsRow.addView(item,
-                new LinearLayout.LayoutParams(0, dp(32), 1));
+                new LinearLayout.LayoutParams(0, dp(34), 1));
 
             item.setOnClickListener(v -> {
+                if (word.isEmpty()) return;
+
                 vibrate();
                 replaceCurrentWord(word);
                 updateSuggestions();
@@ -246,15 +286,18 @@ public class JarvisImeService extends InputMethodService {
             if (prefix.startsWith("sa")) {
                 return new String[]{"salam", "sabah", "sağ"};
             }
+
             if (prefix.startsWith("ya")) {
                 return new String[]{"yaxşı", "yardım", "yaşamaq"};
             }
+
             return new String[]{prefix, prefix + "a", prefix + "ı"};
         }
 
         if (prefix.startsWith("he")) {
             return new String[]{"hello", "help", "here"};
         }
+
         if (prefix.startsWith("th")) {
             return new String[]{"thanks", "there", "think"};
         }
@@ -266,14 +309,28 @@ public class JarvisImeService extends InputMethodService {
         ArrayList<Map.Entry<String, Integer>> matches =
             new ArrayList<>();
 
-        for (Map.Entry<String, Integer> entry : russianWords.entrySet()) {
-            if (entry.getKey().startsWith(prefix)) {
-                matches.add(entry);
+        synchronized (russianWords) {
+            if (dictionaryLoaded) {
+                for (Map.Entry<String, Integer> entry :
+                        russianWords.tailMap(prefix).entrySet()) {
+
+                    if (!entry.getKey().startsWith(prefix)) break;
+
+                    matches.add(
+                        new java.util.AbstractMap.SimpleEntry<>(
+                            entry.getKey(),
+                            entry.getValue()
+                        )
+                    );
+                }
             }
         }
 
         Collections.sort(matches,
-            (a, b) -> Integer.compare(b.getValue(), a.getValue()));
+            (a, b) -> Integer.compare(
+                b.getValue(), a.getValue()
+            )
+        );
 
         ArrayList<String> result = new ArrayList<>();
 
@@ -281,12 +338,12 @@ public class JarvisImeService extends InputMethodService {
             result.add(matches.get(i).getKey());
         }
 
+        if (result.isEmpty()) {
+            result.add(prefix);
+        }
+
         while (result.size() < 3) {
-            if (result.isEmpty()) {
-                result.add(prefix);
-            } else {
-                result.add("");
-            }
+            result.add("");
         }
 
         return result.toArray(new String[0]);
@@ -376,7 +433,7 @@ public class JarvisImeService extends InputMethodService {
         String[][] rows = {
             {"1","2","3","4","5","6","7","8","9","0"},
             {"@","#","$","%","&","-","+","(",")","/"},
-            {"*","\"","'",":",";","!","?","=","_", "."}
+            {"*","\"","'",":",";","!","?","=","_","."}
         };
 
         for (String[] values : rows) {
@@ -431,15 +488,20 @@ public class JarvisImeService extends InputMethodService {
 
         space.setOnTouchListener((v, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                spaceDownX = event.getX();
+                space.setTag(event.getX());
             }
 
             if (event.getAction() == MotionEvent.ACTION_UP) {
-                float dx = event.getX() - spaceDownX;
+                Object tag = space.getTag();
 
-                if (Math.abs(dx) > dp(35)) {
-                    changeLanguage(dx < 0 ? 1 : -1);
-                    return true;
+                if (tag instanceof Float) {
+                    float start = (Float) tag;
+                    float dx = event.getX() - start;
+
+                    if (Math.abs(dx) > dp(35)) {
+                        changeLanguage(dx < 0 ? 1 : -1);
+                        return true;
+                    }
                 }
             }
 
@@ -474,7 +536,8 @@ public class JarvisImeService extends InputMethodService {
 
         String displayed = value;
 
-        if (value.length() == 1 && Character.isLetter(value.charAt(0))) {
+        if (value.length() == 1 &&
+                Character.isLetter(value.charAt(0))) {
             displayed = shifted
                 ? value.toUpperCase(locale())
                 : value.toLowerCase(locale());
@@ -504,26 +567,64 @@ public class JarvisImeService extends InputMethodService {
         params.setMargins(dp(2), dp(3), dp(2), dp(3));
         row.addView(key, params);
 
-        key.setOnClickListener(v -> press(value));
+        if (extra.equals("DELETE")) {
+            key.setOnTouchListener((v, event) -> {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        deleteHeld = false;
+                        deleteRepeating = false;
+                        handler.postDelayed(() -> {
+                            if (key.isPressed()) {
+                                deleteHeld = true;
+                                deleteRepeating = true;
+                                deleteOne();
+                                handler.postDelayed(
+                                    deleteRunnable, 65
+                                );
+                            }
+                        }, 400);
+                        return true;
 
-        key.setOnLongClickListener(v -> {
-            if (extra.equals("SHIFT")) {
-                shifted = !shifted;
-                refresh();
-            } else if (extra.equals("DELETE")) {
-                delete();
-            } else if (extra.equals("SYMBOLS")) {
-                symbols = !symbols;
-                refresh();
-            } else if (extra.equals("ABC")) {
-                symbols = false;
-                refresh();
-            } else {
-                showAlternatives(value);
-            }
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        handler.removeCallbacks(deleteRunnable);
 
-            return true;
-        });
+                        boolean wasHeld = deleteHeld;
+
+                        deleteRepeating = false;
+                        deleteHeld = false;
+
+                        if (!wasHeld &&
+                                event.getAction() == MotionEvent.ACTION_UP) {
+                            deleteOne();
+                        }
+
+                        return true;
+                }
+
+                return true;
+            });
+
+        } else {
+            key.setOnClickListener(v -> press(value));
+
+            key.setOnLongClickListener(v -> {
+                if (extra.equals("SHIFT")) {
+                    shifted = !shifted;
+                    refresh();
+                } else if (extra.equals("SYMBOLS")) {
+                    symbols = !symbols;
+                    refresh();
+                } else if (extra.equals("ABC")) {
+                    symbols = false;
+                    refresh();
+                } else {
+                    showAlternatives(value);
+                }
+
+                return true;
+            });
+        }
     }
 
     private GradientDrawable keyBackground() {
@@ -544,7 +645,7 @@ public class JarvisImeService extends InputMethodService {
                 return;
 
             case "⌫":
-                delete();
+                deleteOne();
                 return;
 
             case "?123":
@@ -559,9 +660,18 @@ public class JarvisImeService extends InputMethodService {
 
             case "↵":
                 commit("\n");
+                updateSuggestions();
                 return;
 
             default:
+                if (value.equals(",") || value.equals(".")
+                        || value.equals("!") || value.equals("?")
+                        || value.equals(":") || value.equals(";")) {
+                    commit(value + " ");
+                    updateSuggestions();
+                    return;
+                }
+
                 String output = shifted
                     ? value.toUpperCase(locale())
                     : value.toLowerCase(locale());
@@ -592,7 +702,7 @@ public class JarvisImeService extends InputMethodService {
                 switch (which) {
                     case 0:
                         showSlider("Высота клавиатуры",
-                            keyboardHeight, 230, 340, " px", value -> {
+                            keyboardHeight, 230, 400, " px", value -> {
                                 keyboardHeight = value;
                                 saveInt("keyboard_height", value);
                                 refresh();
@@ -601,7 +711,7 @@ public class JarvisImeService extends InputMethodService {
 
                     case 1:
                         showSlider("Размер клавиш",
-                            keyHeight, 38, 58, " px", value -> {
+                            keyHeight, 38, 65, " px", value -> {
                                 keyHeight = value;
                                 saveInt("key_height", value);
                                 refresh();
@@ -610,7 +720,7 @@ public class JarvisImeService extends InputMethodService {
 
                     case 2:
                         showSlider("Размер букв",
-                            letterSize, 13, 24, "", value -> {
+                            letterSize, 13, 28, "", value -> {
                                 letterSize = value;
                                 saveInt("letter_size", value);
                                 refresh();
@@ -641,6 +751,14 @@ public class JarvisImeService extends InputMethodService {
     }
 
     private void showImeDialog(AlertDialog dialog) {
+        dialog.setOnDismissListener(d -> {
+            if (keyboard != null) {
+                keyboard.invalidate();
+            }
+        });
+
+        dialog.show();
+
         Window window = dialog.getWindow();
 
         if (window != null) {
@@ -648,8 +766,6 @@ public class JarvisImeService extends InputMethodService {
                 WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG
             );
         }
-
-        dialog.show();
     }
 
     private void saveInt(String key, int value) {
@@ -813,7 +929,7 @@ public class JarvisImeService extends InputMethodService {
         }
     }
 
-    private void delete() {
+    private void deleteOne() {
         vibrate();
 
         InputConnection ic = getCurrentInputConnection();
@@ -833,6 +949,13 @@ public class JarvisImeService extends InputMethodService {
 
     private void refresh() {
         setInputView(createKeyboard());
+    }
+
+    @Override
+    public void onDestroy() {
+        deleteRepeating = false;
+        handler.removeCallbacksAndMessages(null);
+        super.onDestroy();
     }
 
     private int dp(int value) {
