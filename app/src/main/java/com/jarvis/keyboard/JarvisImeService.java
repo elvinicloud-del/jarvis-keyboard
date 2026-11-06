@@ -1,3 +1,4 @@
+
 package com.jarvis.keyboard;
 
 import android.inputmethodservice.InputMethodService;
@@ -35,8 +36,10 @@ public class JarvisImeService extends InputMethodService {
 
     private String language = "RU";
     private boolean symbols = false;
-    private boolean shifted = false;
+
+    // Управление регистром
     private boolean capsLock = false;
+    private boolean manualLowerCase = false;
     private long lastShiftTap = 0;
 
     private boolean vibrationEnabled = true;
@@ -72,6 +75,20 @@ public class JarvisImeService extends InputMethodService {
     private final int background = Color.rgb(12, 19, 29);
     private final int keyColor = Color.rgb(30, 43, 58);
     private final int cyan = Color.rgb(0, 210, 245);
+
+    // Выбор символов движением пальца
+    private PopupWindow symbolPopup;
+    private final ArrayList<TextView> symbolViews =
+        new ArrayList<>();
+    private final ArrayList<String> symbolValues =
+        new ArrayList<>();
+
+    private boolean dotGestureActive = false;
+    private boolean symbolPopupShown = false;
+    private int selectedSymbol = -1;
+
+    private float lastTouchX = 0;
+    private float lastTouchY = 0;
 
     private final Runnable deleteRunnable = new Runnable() {
         @Override
@@ -372,12 +389,23 @@ public class JarvisImeService extends InputMethodService {
         return result.toArray(new String[0]);
     }
 
+    private boolean shouldUseUppercase() {
+        if (capsLock) return true;
+        if (manualLowerCase) return false;
+        return shouldCapitalize();
+    }
+
+    private boolean shouldUseUppercaseForCurrentWord() {
+        if (capsLock) return true;
+        if (manualLowerCase) return false;
+        return shouldCapitalizeCurrentWord();
+    }
+
     private void replaceCurrentWord(String word) {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
-        boolean uppercase =
-            capsLock || shifted || shouldCapitalizeCurrentWord();
+        boolean uppercase = shouldUseUppercaseForCurrentWord();
 
         CharSequence before = ic.getTextBeforeCursor(100, 0);
         int length = 0;
@@ -406,10 +434,6 @@ public class JarvisImeService extends InputMethodService {
             : word.toLowerCase(locale());
 
         ic.commitText(output, 1);
-
-        if (shifted && !capsLock) {
-            shifted = false;
-        }
 
         updateLetterKeyLabels();
     }
@@ -575,10 +599,7 @@ public class JarvisImeService extends InputMethodService {
 
         if (value.length() == 1 &&
                 Character.isLetter(value.charAt(0))) {
-            boolean uppercase =
-                capsLock || shifted || shouldCapitalize();
-
-            displayed = uppercase
+            displayed = shouldUseUppercase()
                 ? value.toUpperCase(locale())
                 : value.toLowerCase(locale());
 
@@ -640,13 +661,84 @@ public class JarvisImeService extends InputMethodService {
                 return true;
             });
 
+        } else if (extra.equals("DOT")) {
+            key.setOnTouchListener((v, event) -> {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        dotGestureActive = true;
+                        symbolPopupShown = false;
+                        selectedSymbol = -1;
+
+                        lastTouchX = event.getRawX();
+                        lastTouchY = event.getRawY();
+
+                        handler.postDelayed(() -> {
+                            if (dotGestureActive &&
+                                    !symbolPopupShown) {
+                                showSymbolPopup(key);
+                                updateSymbolSelection(
+                                    lastTouchX, lastTouchY
+                                );
+                            }
+                        }, 250);
+
+                        return true;
+
+                    case MotionEvent.ACTION_MOVE:
+                        lastTouchX = event.getRawX();
+                        lastTouchY = event.getRawY();
+
+                        if (symbolPopupShown) {
+                            updateSymbolSelection(
+                                lastTouchX, lastTouchY
+                            );
+                        }
+
+                        return true;
+
+                    case MotionEvent.ACTION_UP:
+                        handler.removeCallbacksAndMessages(null);
+                        dotGestureActive = false;
+
+                        if (symbolPopupShown) {
+                            updateSymbolSelection(
+                                event.getRawX(), event.getRawY()
+                            );
+
+                            if (selectedSymbol >= 0 &&
+                                    selectedSymbol < symbolValues.size()) {
+                                String chosen =
+                                    symbolValues.get(selectedSymbol);
+
+                                dismissSymbolPopup();
+                                press(chosen);
+                            } else {
+                                dismissSymbolPopup();
+                            }
+
+                        } else {
+                            press(".");
+                        }
+
+                        return true;
+
+                    case MotionEvent.ACTION_CANCEL:
+                        handler.removeCallbacksAndMessages(null);
+                        dotGestureActive = false;
+                        dismissSymbolPopup();
+                        return true;
+                }
+
+                return true;
+            });
+
         } else {
             key.setOnClickListener(v -> press(value));
 
             key.setOnLongClickListener(v -> {
                 if (extra.equals("SHIFT")) {
                     capsLock = !capsLock;
-                    shifted = false;
+                    manualLowerCase = false;
                     lastShiftTap = 0;
                     updateLetterKeyLabels();
 
@@ -657,9 +749,6 @@ public class JarvisImeService extends InputMethodService {
                 } else if (extra.equals("ABC")) {
                     symbols = false;
                     refresh();
-
-                } else if (extra.equals("DOT")) {
-                    showSymbolPopup(key);
 
                 } else {
                     showAlternatives(value);
@@ -675,24 +764,28 @@ public class JarvisImeService extends InputMethodService {
             "-", "(", ")", "!", "?", ",", ":", ";"
         };
 
+        symbolViews.clear();
+        symbolValues.clear();
+
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.HORIZONTAL);
         panel.setGravity(Gravity.CENTER);
         panel.setPadding(dp(5), dp(5), dp(5), dp(5));
         panel.setBackground(keyBackground());
 
-        PopupWindow popup = new PopupWindow(
+        symbolPopup = new PopupWindow(
             panel,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
-            true
+            false
         );
 
-        popup.setBackgroundDrawable(keyBackground());
-        popup.setOutsideTouchable(true);
+        symbolPopup.setBackgroundDrawable(keyBackground());
+        symbolPopup.setOutsideTouchable(false);
+        symbolPopup.setTouchable(false);
 
         if (Build.VERSION.SDK_INT >= 21) {
-            popup.setElevation(dp(8));
+            symbolPopup.setElevation(dp(8));
         }
 
         for (String symbol : values) {
@@ -710,13 +803,60 @@ public class JarvisImeService extends InputMethodService {
             params.setMargins(dp(2), 0, dp(2), 0);
             panel.addView(item, params);
 
-            item.setOnClickListener(v -> {
-                popup.dismiss();
-                press(symbol);
-            });
+            symbolViews.add(item);
+            symbolValues.add(symbol);
         }
 
-        popup.showAsDropDown(anchor, 0, -dp(65));
+        symbolPopup.showAsDropDown(anchor, 0, -dp(65));
+        symbolPopupShown = true;
+    }
+
+    private void updateSymbolSelection(float rawX, float rawY) {
+        selectedSymbol = -1;
+
+        for (int i = 0; i < symbolViews.size(); i++) {
+            TextView item = symbolViews.get(i);
+
+            int[] location = new int[2];
+            item.getLocationOnScreen(location);
+
+            int left = location[0];
+            int top = location[1];
+            int right = left + item.getWidth();
+            int bottom = top + item.getHeight();
+
+            boolean inside =
+                rawX >= left && rawX <= right
+                && rawY >= top && rawY <= bottom;
+
+            if (inside) {
+                selectedSymbol = i;
+            }
+
+            if (inside) {
+                GradientDrawable selected = new GradientDrawable();
+                selected.setColor(Color.rgb(0, 105, 135));
+                selected.setCornerRadius(dp(9));
+                selected.setStroke(dp(2), cyan);
+                item.setBackground(selected);
+            } else {
+                item.setBackground(keyBackground());
+            }
+        }
+    }
+
+    private void dismissSymbolPopup() {
+        if (symbolPopup != null) {
+            try {
+                symbolPopup.dismiss();
+            } catch (Exception ignored) {}
+        }
+
+        symbolPopup = null;
+        symbolPopupShown = false;
+        selectedSymbol = -1;
+        symbolViews.clear();
+        symbolValues.clear();
     }
 
     private GradientDrawable keyBackground() {
@@ -802,8 +942,7 @@ public class JarvisImeService extends InputMethodService {
     }
 
     private void updateLetterKeyLabels() {
-        boolean uppercase =
-            capsLock || shifted || shouldCapitalize();
+        boolean uppercase = shouldUseUppercase();
 
         for (int i = 0; i < letterKeyViews.size(); i++) {
             TextView view = letterKeyViews.get(i);
@@ -823,14 +962,12 @@ public class JarvisImeService extends InputMethodService {
 
         if (now - lastShiftTap < 350) {
             capsLock = !capsLock;
-            shifted = false;
+            manualLowerCase = false;
             lastShiftTap = 0;
 
         } else {
-            if (!capsLock) {
-                shifted = true;
-            }
-
+            capsLock = false;
+            manualLowerCase = !manualLowerCase;
             lastShiftTap = now;
         }
 
@@ -915,8 +1052,7 @@ public class JarvisImeService extends InputMethodService {
                     return;
                 }
 
-                boolean uppercase =
-                    capsLock || shifted || shouldCapitalize();
+                boolean uppercase = shouldUseUppercase();
 
                 String output = uppercase
                     ? value.toUpperCase(locale())
@@ -937,10 +1073,6 @@ public class JarvisImeService extends InputMethodService {
                 }
 
                 commit(output);
-
-                if (shifted && !capsLock) {
-                    shifted = false;
-                }
 
                 updateSuggestions();
                 updateLetterKeyLabels();
@@ -1128,18 +1260,13 @@ public class JarvisImeService extends InputMethodService {
 
         AlertDialog dialog = new AlertDialog.Builder(this)
             .setItems(new String[]{selected}, (d, which) -> {
-                boolean uppercase =
-                    capsLock || shifted || shouldCapitalize();
+                boolean uppercase = shouldUseUppercase();
 
                 commit(
                     uppercase
                         ? selected.toUpperCase(locale())
                         : selected.toLowerCase(locale())
                 );
-
-                if (shifted && !capsLock) {
-                    shifted = false;
-                }
 
                 updateSuggestions();
                 updateLetterKeyLabels();
@@ -1217,12 +1344,15 @@ public class JarvisImeService extends InputMethodService {
     }
 
     private void refresh() {
+        dismissSymbolPopup();
         setInputView(createKeyboard());
     }
 
     @Override
     public void onDestroy() {
         deletePressed = false;
+        dotGestureActive = false;
+        dismissSymbolPopup();
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -1232,4 +1362,4 @@ public class JarvisImeService extends InputMethodService {
             value * getResources().getDisplayMetrics().density
         );
     }
-                                 }
+}
