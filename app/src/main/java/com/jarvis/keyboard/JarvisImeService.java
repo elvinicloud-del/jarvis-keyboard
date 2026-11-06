@@ -1,4 +1,3 @@
-
 package com.jarvis.keyboard;
 
 import android.inputmethodservice.InputMethodService;
@@ -12,6 +11,7 @@ import android.view.inputmethod.InputConnection;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.SeekBar;
+import android.widget.PopupWindow;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -36,6 +36,8 @@ public class JarvisImeService extends InputMethodService {
     private String language = "RU";
     private boolean symbols = false;
     private boolean shifted = false;
+    private boolean capsLock = false;
+    private long lastShiftTap = 0;
 
     private boolean vibrationEnabled = true;
     private int vibrationDuration = 25;
@@ -47,6 +49,12 @@ public class JarvisImeService extends InputMethodService {
     private LinearLayout keyboard;
     private LinearLayout suggestionsRow;
     private SharedPreferences prefs;
+
+    private final ArrayList<TextView> letterKeyViews =
+        new ArrayList<>();
+
+    private final ArrayList<String> letterKeyValues =
+        new ArrayList<>();
 
     private final TreeMap<String, Integer> russianWords =
         new TreeMap<>();
@@ -164,6 +172,9 @@ public class JarvisImeService extends InputMethodService {
         keyboard = new LinearLayout(this);
         keyboard.setOrientation(LinearLayout.VERTICAL);
 
+        letterKeyViews.clear();
+        letterKeyValues.clear();
+
         keyboard.setPadding(
             dp(4), dp(5), dp(4), dp(14)
         );
@@ -185,6 +196,8 @@ public class JarvisImeService extends InputMethodService {
         }
 
         addBottomRow();
+
+        updateLetterKeyLabels();
 
         return keyboard;
     }
@@ -363,6 +376,9 @@ public class JarvisImeService extends InputMethodService {
         InputConnection ic = getCurrentInputConnection();
         if (ic == null) return;
 
+        boolean uppercase =
+            capsLock || shifted || shouldCapitalizeCurrentWord();
+
         CharSequence before = ic.getTextBeforeCursor(100, 0);
         int length = 0;
 
@@ -385,7 +401,17 @@ public class JarvisImeService extends InputMethodService {
             ic.deleteSurroundingText(length, 0);
         }
 
-        ic.commitText(word, 1);
+        String output = uppercase
+            ? word.toUpperCase(locale())
+            : word.toLowerCase(locale());
+
+        ic.commitText(output, 1);
+
+        if (shifted && !capsLock) {
+            shifted = false;
+        }
+
+        updateLetterKeyLabels();
     }
 
     private void addLetterRows() {
@@ -489,6 +515,7 @@ public class JarvisImeService extends InputMethodService {
             vibrate();
             commit(" ");
             updateSuggestions();
+            updateLetterKeyLabels();
         });
 
         space.setOnLongClickListener(v -> {
@@ -518,7 +545,7 @@ public class JarvisImeService extends InputMethodService {
             return false;
         });
 
-        addKey(row, ".", 1, "");
+        addKey(row, ".", 1, "DOT");
         addKey(row, "↵", 1, "ENTER");
 
         keyboard.addView(row);
@@ -548,9 +575,15 @@ public class JarvisImeService extends InputMethodService {
 
         if (value.length() == 1 &&
                 Character.isLetter(value.charAt(0))) {
-            displayed = shifted
+            boolean uppercase =
+                capsLock || shifted || shouldCapitalize();
+
+            displayed = uppercase
                 ? value.toUpperCase(locale())
                 : value.toLowerCase(locale());
+
+            letterKeyViews.add(main);
+            letterKeyValues.add(value);
         }
 
         main.setText(displayed);
@@ -612,14 +645,22 @@ public class JarvisImeService extends InputMethodService {
 
             key.setOnLongClickListener(v -> {
                 if (extra.equals("SHIFT")) {
-                    shifted = !shifted;
-                    refresh();
+                    capsLock = !capsLock;
+                    shifted = false;
+                    lastShiftTap = 0;
+                    updateLetterKeyLabels();
+
                 } else if (extra.equals("SYMBOLS")) {
                     symbols = !symbols;
                     refresh();
+
                 } else if (extra.equals("ABC")) {
                     symbols = false;
                     refresh();
+
+                } else if (extra.equals("DOT")) {
+                    showSymbolPopup(key);
+
                 } else {
                     showAlternatives(value);
                 }
@@ -627,6 +668,55 @@ public class JarvisImeService extends InputMethodService {
                 return true;
             });
         }
+    }
+
+    private void showSymbolPopup(View anchor) {
+        String[] values = {
+            "-", "(", ")", "!", "?", ",", ":", ";"
+        };
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.HORIZONTAL);
+        panel.setGravity(Gravity.CENTER);
+        panel.setPadding(dp(5), dp(5), dp(5), dp(5));
+        panel.setBackground(keyBackground());
+
+        PopupWindow popup = new PopupWindow(
+            panel,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        );
+
+        popup.setBackgroundDrawable(keyBackground());
+        popup.setOutsideTouchable(true);
+
+        if (Build.VERSION.SDK_INT >= 21) {
+            popup.setElevation(dp(8));
+        }
+
+        for (String symbol : values) {
+            TextView item = new TextView(this);
+            item.setText(symbol);
+            item.setTextColor(Color.WHITE);
+            item.setTextSize(21);
+            item.setTypeface(Typeface.DEFAULT_BOLD);
+            item.setGravity(Gravity.CENTER);
+            item.setBackground(keyBackground());
+
+            LinearLayout.LayoutParams params =
+                new LinearLayout.LayoutParams(dp(39), dp(48));
+
+            params.setMargins(dp(2), 0, dp(2), 0);
+            panel.addView(item, params);
+
+            item.setOnClickListener(v -> {
+                popup.dismiss();
+                press(symbol);
+            });
+        }
+
+        popup.showAsDropDown(anchor, 0, -dp(65));
     }
 
     private GradientDrawable keyBackground() {
@@ -637,7 +727,6 @@ public class JarvisImeService extends InputMethodService {
         return bg;
     }
 
-    // Любой символ, который не является буквой или цифрой
     private boolean isSymbol(char c) {
         return !Character.isLetterOrDigit(c)
             && !Character.isWhitespace(c);
@@ -647,19 +736,10 @@ public class JarvisImeService extends InputMethodService {
         return c == '.' || c == '!' || c == '?';
     }
 
-    // Проверяем, нужно ли начинать предложение с заглавной
-    private boolean shouldCapitalize() {
-        InputConnection ic = getCurrentInputConnection();
-
-        if (ic == null) return false;
-
-        CharSequence before = ic.getTextBeforeCursor(100, 0);
-
-        if (before == null || before.length() == 0) {
+    private boolean shouldCapitalizeText(String text) {
+        if (text == null || text.isEmpty()) {
             return true;
         }
-
-        String text = before.toString();
 
         for (int i = text.length() - 1; i >= 0; i--) {
             char c = text.charAt(i);
@@ -684,13 +764,85 @@ public class JarvisImeService extends InputMethodService {
         return true;
     }
 
+    private boolean shouldCapitalize() {
+        InputConnection ic = getCurrentInputConnection();
+
+        if (ic == null) return false;
+
+        CharSequence before = ic.getTextBeforeCursor(100, 0);
+
+        if (before == null) return true;
+
+        return shouldCapitalizeText(before.toString());
+    }
+
+    private boolean shouldCapitalizeCurrentWord() {
+        InputConnection ic = getCurrentInputConnection();
+
+        if (ic == null) return false;
+
+        CharSequence before = ic.getTextBeforeCursor(100, 0);
+
+        if (before == null) return true;
+
+        String text = before.toString();
+        int start = text.length();
+
+        while (start > 0) {
+            char c = text.charAt(start - 1);
+
+            if (Character.isLetter(c) || c == '\'' || c == '’') {
+                start--;
+            } else {
+                break;
+            }
+        }
+
+        return shouldCapitalizeText(text.substring(0, start));
+    }
+
+    private void updateLetterKeyLabels() {
+        boolean uppercase =
+            capsLock || shifted || shouldCapitalize();
+
+        for (int i = 0; i < letterKeyViews.size(); i++) {
+            TextView view = letterKeyViews.get(i);
+
+            String value = letterKeyValues.get(i);
+
+            view.setText(
+                uppercase
+                    ? value.toUpperCase(locale())
+                    : value.toLowerCase(locale())
+            );
+        }
+    }
+
+    private void handleShiftTap() {
+        long now = System.currentTimeMillis();
+
+        if (now - lastShiftTap < 350) {
+            capsLock = !capsLock;
+            shifted = false;
+            lastShiftTap = 0;
+
+        } else {
+            if (!capsLock) {
+                shifted = true;
+            }
+
+            lastShiftTap = now;
+        }
+
+        updateLetterKeyLabels();
+    }
+
     private void press(String value) {
         vibrate();
 
         switch (value) {
             case "⇧":
-                shifted = !shifted;
-                refresh();
+                handleShiftTap();
                 return;
 
             case "⌫":
@@ -710,6 +862,7 @@ public class JarvisImeService extends InputMethodService {
             case "↵":
                 commit("\n");
                 updateSuggestions();
+                updateLetterKeyLabels();
                 return;
 
             default:
@@ -758,10 +911,14 @@ public class JarvisImeService extends InputMethodService {
                     }
 
                     updateSuggestions();
+                    updateLetterKeyLabels();
                     return;
                 }
 
-                String output = shifted
+                boolean uppercase =
+                    capsLock || shifted || shouldCapitalize();
+
+                String output = uppercase
                     ? value.toUpperCase(locale())
                     : value.toLowerCase(locale());
 
@@ -777,20 +934,16 @@ public class JarvisImeService extends InputMethodService {
                             output = " " + output;
                         }
                     }
-
-                    if (shouldCapitalize()) {
-                        output = output.toUpperCase(locale());
-                    }
                 }
 
                 commit(output);
 
-                if (shifted) {
+                if (shifted && !capsLock) {
                     shifted = false;
-                    refresh();
                 }
 
                 updateSuggestions();
+                updateLetterKeyLabels();
         }
     }
 
@@ -974,11 +1127,23 @@ public class JarvisImeService extends InputMethodService {
         String selected = option;
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-            .setItems(new String[]{selected}, (d, which) ->
-                commit(shifted
-                    ? selected.toUpperCase(locale())
-                    : selected.toLowerCase(locale()))
-            )
+            .setItems(new String[]{selected}, (d, which) -> {
+                boolean uppercase =
+                    capsLock || shifted || shouldCapitalize();
+
+                commit(
+                    uppercase
+                        ? selected.toUpperCase(locale())
+                        : selected.toLowerCase(locale())
+                );
+
+                if (shifted && !capsLock) {
+                    shifted = false;
+                }
+
+                updateSuggestions();
+                updateLetterKeyLabels();
+            })
             .create();
 
         showImeDialog(dialog);
@@ -1042,6 +1207,7 @@ public class JarvisImeService extends InputMethodService {
         }
 
         updateSuggestions();
+        updateLetterKeyLabels();
     }
 
     private Locale locale() {
@@ -1066,4 +1232,4 @@ public class JarvisImeService extends InputMethodService {
             value * getResources().getDisplayMetrics().density
         );
     }
-}
+                                 }
