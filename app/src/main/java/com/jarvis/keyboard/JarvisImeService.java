@@ -807,7 +807,7 @@ public class JarvisImeService extends InputMethodService {
             symbolValues.add(symbol);
         }
 
-        symbolPopup.showAsDropDown(anchor, 0, -dp(65));
+        symbolPopup.showAsDropDown(anchor, 0, -dp(100));
         symbolPopupShown = true;
     }
 
