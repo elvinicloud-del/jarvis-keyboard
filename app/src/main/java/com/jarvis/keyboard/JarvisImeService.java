@@ -30,7 +30,11 @@ import java.util.Locale;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.HashMap;
 import java.util.TreeMap;
+import java.util.List;
 
 public class JarvisImeService extends InputMethodService {
 
@@ -64,6 +68,9 @@ public class JarvisImeService extends InputMethodService {
 
     private volatile boolean dictionaryLoaded = false;
 
+    private final RussianT9Engine russianT9 =
+        new RussianT9Engine();
+
     private final Handler handler =
         new Handler(Looper.getMainLooper());
 
@@ -78,8 +85,10 @@ public class JarvisImeService extends InputMethodService {
 
     // Выбор символов движением пальца
     private PopupWindow symbolPopup;
+
     private final ArrayList<TextView> symbolViews =
         new ArrayList<>();
+
     private final ArrayList<String> symbolValues =
         new ArrayList<>();
 
@@ -123,6 +132,7 @@ public class JarvisImeService extends InputMethodService {
         keyHeight = prefs.getInt("key_height", 58);
         letterSize = prefs.getInt("letter_size", 20);
 
+        restoreRussianLearning();
         loadRussianDictionaryInBackground();
     }
 
@@ -173,6 +183,7 @@ public class JarvisImeService extends InputMethodService {
                 russianWords.putAll(loaded);
             }
 
+            russianT9.load(loaded);
             dictionaryLoaded = true;
 
             handler.post(() -> updateSuggestions());
@@ -272,7 +283,21 @@ public class JarvisImeService extends InputMethodService {
                 if (word.isEmpty()) return;
 
                 vibrate();
+
+                String previousWord = getPreviousWord();
+
                 replaceCurrentWord(word);
+
+                if (language.equals("RU")) {
+                    russianT9.learnWord(word);
+
+                    if (!previousWord.isEmpty()) {
+                        russianT9.learnNextWord(previousWord, word);
+                    }
+
+                    saveRussianLearning();
+                }
+
                 updateSuggestions();
             });
         }
@@ -301,6 +326,40 @@ public class JarvisImeService extends InputMethodService {
         }
 
         return text.substring(start).toLowerCase(locale());
+    }
+
+    private String getPreviousWord() {
+        InputConnection ic = getCurrentInputConnection();
+
+        if (ic == null) return "";
+
+        CharSequence before = ic.getTextBeforeCursor(200, 0);
+
+        if (before == null || before.length() == 0) return "";
+
+        String text = before.toString();
+        String currentWord = getCurrentWord();
+
+        if (!currentWord.isEmpty()
+                && text.toLowerCase(Locale.ROOT).endsWith(currentWord)) {
+            text = text.substring(0, text.length() - currentWord.length());
+        }
+
+        int end = text.length();
+
+        while (end > 0 && !Character.isLetter(text.charAt(end - 1))) {
+            end--;
+        }
+
+        int start = end;
+
+        while (start > 0 && Character.isLetter(text.charAt(start - 1))) {
+            start--;
+        }
+
+        if (start == end) return "";
+
+        return text.substring(start, end).toLowerCase(Locale.ROOT);
     }
 
     private String[] getSuggestions() {
@@ -346,47 +405,21 @@ public class JarvisImeService extends InputMethodService {
     }
 
     private String[] getRussianSuggestions(String prefix) {
-        ArrayList<Map.Entry<String, Integer>> matches =
-            new ArrayList<>();
-
-        synchronized (russianWords) {
-            if (dictionaryLoaded) {
-                for (Map.Entry<String, Integer> entry :
-                        russianWords.tailMap(prefix).entrySet()) {
-
-                    if (!entry.getKey().startsWith(prefix)) break;
-
-                    matches.add(
-                        new java.util.AbstractMap.SimpleEntry<>(
-                            entry.getKey(),
-                            entry.getValue()
-                        )
-                    );
-                }
-            }
-        }
-
-        Collections.sort(matches,
-            (a, b) -> Integer.compare(
-                b.getValue(), a.getValue()
-            )
+        List<String> matches = russianT9.suggest(
+            prefix,
+            getPreviousWord(),
+            3
         );
 
-        ArrayList<String> result = new ArrayList<>();
+        String[] result = new String[3];
 
-        for (int i = 0; i < matches.size() && i < 3; i++) {
-            result.add(matches.get(i).getKey());
+        for (int i = 0; i < result.length; i++) {
+            result[i] = i < matches.size()
+                ? matches.get(i)
+                : "";
         }
 
-        if (result.isEmpty()) {
-            result.add(prefix);
-        }
-
-        while (result.size() < 3) {
-            result.add("");
-        }
-
-        return result.toArray(new String[0]);
+        return result;
     }
 
     private boolean shouldUseUppercase() {
@@ -537,9 +570,7 @@ public class JarvisImeService extends InputMethodService {
 
         space.setOnClickListener(v -> {
             vibrate();
-            commit(" ");
-            updateSuggestions();
-            updateLetterKeyLabels();
+            commitSpace();
         });
 
         space.setOnLongClickListener(v -> {
@@ -850,9 +881,10 @@ public class JarvisImeService extends InputMethodService {
             try {
                 symbolPopup.dismiss();
             } catch (Exception ignored) {}
+
+            symbolPopup = null;
         }
 
-        symbolPopup = null;
         symbolPopupShown = false;
         selectedSymbol = -1;
         symbolViews.clear();
@@ -1322,6 +1354,17 @@ public class JarvisImeService extends InputMethodService {
         }
     }
 
+    private void commitSpace() {
+        InputConnection ic = getCurrentInputConnection();
+
+        if (ic == null) return;
+
+        ic.commitText(" ", 1);
+
+        updateSuggestions();
+        updateLetterKeyLabels();
+    }
+
     private void deleteOne(boolean withVibration) {
         if (withVibration) {
             vibrate();
@@ -1348,8 +1391,65 @@ public class JarvisImeService extends InputMethodService {
         setInputView(createKeyboard());
     }
 
+    private void restoreRussianLearning() {
+        if (prefs == null) return;
+
+        Set<String> words = prefs.getStringSet(
+            "ru_learned_words", new HashSet<>()
+        );
+
+        russianT9.restoreLearnedWords(
+            words == null ? new HashSet<>() : new HashSet<>(words)
+        );
+
+        Map<String, Set<String>> nextWords = new HashMap<>();
+
+        Set<String> savedPairs = prefs.getStringSet(
+            "ru_next_words", new HashSet<>()
+        );
+
+        if (savedPairs != null) {
+            for (String pair : savedPairs) {
+                String[] parts = pair.split("\\|", 2);
+
+                if (parts.length == 2) {
+                    nextWords.computeIfAbsent(
+                        parts[0], key -> new HashSet<>()
+                    ).add(parts[1]);
+                }
+            }
+        }
+
+        russianT9.restoreNextWords(nextWords);
+    }
+
+    private void saveRussianLearning() {
+        if (prefs == null) return;
+
+        Set<String> words = russianT9.getLearnedWords();
+
+        Set<String> savedPairs = new HashSet<>();
+
+        Map<String, Set<String>> nextWords =
+            russianT9.getNextWords();
+
+        for (Map.Entry<String, Set<String>> entry :
+                nextWords.entrySet()) {
+
+            for (String next : entry.getValue()) {
+                savedPairs.add(entry.getKey() + "|" + next);
+            }
+        }
+
+        prefs.edit()
+            .putStringSet("ru_learned_words", words)
+            .putStringSet("ru_next_words", savedPairs)
+            .apply();
+    }
+
     @Override
     public void onDestroy() {
+        saveRussianLearning();
         deletePressed = false;
         dotGestureActive = false;
         dismissSymbolPopup();
