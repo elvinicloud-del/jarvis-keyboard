@@ -59,7 +59,6 @@ public class JarvisImeService extends InputMethodService {
     private boolean deletePressed = false;
     private boolean deleteHeld = false;
 
-    // Скорость повторного удаления
     private int deleteRepeatInterval = 180;
 
     private final int background = Color.rgb(12, 19, 29);
@@ -76,7 +75,6 @@ public class JarvisImeService extends InputMethodService {
 
             handler.postDelayed(this, deleteRepeatInterval);
 
-            // Постепенно ускоряем удаление
             deleteRepeatInterval = Math.max(
                 45,
                 deleteRepeatInterval - 20
@@ -387,7 +385,6 @@ public class JarvisImeService extends InputMethodService {
             ic.deleteSurroundingText(length, 0);
         }
 
-        // Вставляем слово без автоматического пробела
         ic.commitText(word, 1);
     }
 
@@ -640,9 +637,51 @@ public class JarvisImeService extends InputMethodService {
         return bg;
     }
 
-    // Проверяем, является ли символ знаком препинания
-    private boolean isPunctuation(char c) {
-        return ",.!?:;".indexOf(c) >= 0;
+    // Любой символ, который не является буквой или цифрой
+    private boolean isSymbol(char c) {
+        return !Character.isLetterOrDigit(c)
+            && !Character.isWhitespace(c);
+    }
+
+    private boolean isSentenceEnd(char c) {
+        return c == '.' || c == '!' || c == '?';
+    }
+
+    // Проверяем, нужно ли начинать предложение с заглавной
+    private boolean shouldCapitalize() {
+        InputConnection ic = getCurrentInputConnection();
+
+        if (ic == null) return false;
+
+        CharSequence before = ic.getTextBeforeCursor(100, 0);
+
+        if (before == null || before.length() == 0) {
+            return true;
+        }
+
+        String text = before.toString();
+
+        for (int i = text.length() - 1; i >= 0; i--) {
+            char c = text.charAt(i);
+
+            if (c == '\n' || c == '\r') {
+                return true;
+            }
+
+            if (Character.isWhitespace(c)) {
+                continue;
+            }
+
+            if (c == '"' || c == '\'' || c == '»'
+                    || c == ')' || c == ']' || c == '}'
+                    || c == '”' || c == '’') {
+                continue;
+            }
+
+            return isSentenceEnd(c);
+        }
+
+        return true;
     }
 
     private void press(String value) {
@@ -674,7 +713,9 @@ public class JarvisImeService extends InputMethodService {
                 return;
 
             default:
-                if (isPunctuation(value.charAt(0))) {
+                char first = value.charAt(0);
+
+                if (isSymbol(first)) {
                     InputConnection ic = getCurrentInputConnection();
 
                     if (ic != null) {
@@ -684,27 +725,35 @@ public class JarvisImeService extends InputMethodService {
                         String previous =
                             before == null ? "" : before.toString();
 
-                        if (previous.endsWith(" ")
-                                && previous.length() >= 2
-                                && isPunctuation(
-                                    previous.charAt(previous.length() - 2)
-                                )) {
+                        boolean previousIsSymbol = false;
 
-                            // Убираем пробел после предыдущего знака
+                        if (!previous.isEmpty()) {
+                            char last = previous.charAt(
+                                previous.length() - 1
+                            );
+
+                            previousIsSymbol = isSymbol(last);
+                        }
+
+                        boolean symbolBeforeSpace =
+                            previous.length() >= 2
+                            && previous.endsWith(" ")
+                            && isSymbol(
+                                previous.charAt(previous.length() - 2)
+                            );
+
+                        if (symbolBeforeSpace) {
                             ic.deleteSurroundingText(1, 0);
                             ic.commitText(value, 1);
 
-                        } else if (!previous.isEmpty()
-                                && isPunctuation(
-                                    previous.charAt(previous.length() - 1)
-                                )) {
-
-                            // Не ставим пробел между знаками
+                        } else if (previousIsSymbol) {
                             ic.commitText(value, 1);
 
-                        } else {
-                            // После одиночного знака ставим пробел
+                        } else if (",.!?:;".indexOf(first) >= 0) {
                             ic.commitText(value + " ", 1);
+
+                        } else {
+                            ic.commitText(value, 1);
                         }
                     }
 
@@ -716,17 +765,21 @@ public class JarvisImeService extends InputMethodService {
                     ? value.toUpperCase(locale())
                     : value.toLowerCase(locale());
 
-                // Если после группы знаков нет пробела,
-                // добавляем его перед следующей буквой
-                InputConnection ic = getCurrentInputConnection();
+                if (Character.isLetter(first)) {
+                    InputConnection ic = getCurrentInputConnection();
 
-                if (ic != null) {
-                    CharSequence before =
-                        ic.getTextBeforeCursor(1, 0);
+                    if (ic != null) {
+                        CharSequence before =
+                            ic.getTextBeforeCursor(1, 0);
 
-                    if (before != null && before.length() > 0
-                            && isPunctuation(before.charAt(0))) {
-                        output = " " + output;
+                        if (before != null && before.length() > 0
+                                && isSymbol(before.charAt(0))) {
+                            output = " " + output;
+                        }
+                    }
+
+                    if (shouldCapitalize()) {
+                        output = output.toUpperCase(locale());
                     }
                 }
 
