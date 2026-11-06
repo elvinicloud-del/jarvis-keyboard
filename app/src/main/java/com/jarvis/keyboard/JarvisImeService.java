@@ -28,7 +28,6 @@ import java.io.InputStreamReader;
 import java.util.Locale;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -47,7 +46,6 @@ public class JarvisImeService extends InputMethodService {
 
     private LinearLayout keyboard;
     private LinearLayout suggestionsRow;
-
     private SharedPreferences prefs;
 
     private final TreeMap<String, Integer> russianWords =
@@ -58,7 +56,7 @@ public class JarvisImeService extends InputMethodService {
     private final Handler handler =
         new Handler(Looper.getMainLooper());
 
-    private boolean deleteRepeating = false;
+    private boolean deletePressed = false;
     private boolean deleteHeld = false;
 
     private final int background = Color.rgb(12, 19, 29);
@@ -68,9 +66,10 @@ public class JarvisImeService extends InputMethodService {
     private final Runnable deleteRunnable = new Runnable() {
         @Override
         public void run() {
-            if (!deleteRepeating) return;
+            if (!deletePressed) return;
 
-            deleteOne();
+            deleteHeld = true;
+            deleteOne(false);
             handler.postDelayed(this, 65);
         }
     };
@@ -110,7 +109,6 @@ public class JarvisImeService extends InputMethodService {
 
                 while ((line = reader.readLine()) != null) {
                     line = line.trim();
-
                     if (line.isEmpty()) continue;
 
                     String[] parts = line.split("\\s+");
@@ -157,7 +155,11 @@ public class JarvisImeService extends InputMethodService {
     private View createKeyboard() {
         keyboard = new LinearLayout(this);
         keyboard.setOrientation(LinearLayout.VERTICAL);
-        keyboard.setPadding(dp(4), dp(5), dp(4), dp(5));
+
+        keyboard.setPadding(
+            dp(4), dp(5), dp(4), dp(14)
+        );
+
         keyboard.setBackgroundColor(background);
 
         keyboard.setLayoutParams(new ViewGroup.LayoutParams(
@@ -472,7 +474,7 @@ public class JarvisImeService extends InputMethodService {
         LinearLayout.LayoutParams p =
             new LinearLayout.LayoutParams(0, dp(keyHeight), 5);
 
-        p.setMargins(dp(2), dp(3), dp(2), dp(3));
+        p.setMargins(0, dp(1), 0, dp(1));
         row.addView(space, p);
 
         space.setOnClickListener(v -> {
@@ -564,41 +566,32 @@ public class JarvisImeService extends InputMethodService {
         LinearLayout.LayoutParams params =
             new LinearLayout.LayoutParams(0, dp(keyHeight), weight);
 
-        params.setMargins(dp(2), dp(3), dp(2), dp(3));
+        params.setMargins(0, dp(1), 0, dp(1));
         row.addView(key, params);
 
         if (extra.equals("DELETE")) {
             key.setOnTouchListener((v, event) -> {
                 switch (event.getAction()) {
                     case MotionEvent.ACTION_DOWN:
+                        deletePressed = true;
                         deleteHeld = false;
-                        deleteRepeating = false;
-                        handler.postDelayed(() -> {
-                            if (key.isPressed()) {
-                                deleteHeld = true;
-                                deleteRepeating = true;
-                                deleteOne();
-                                handler.postDelayed(
-                                    deleteRunnable, 65
-                                );
-                            }
-                        }, 400);
+                        vibrate();
+
+                        handler.removeCallbacks(deleteRunnable);
+                        handler.postDelayed(deleteRunnable, 400);
                         return true;
 
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
+                        deletePressed = false;
                         handler.removeCallbacks(deleteRunnable);
 
-                        boolean wasHeld = deleteHeld;
-
-                        deleteRepeating = false;
-                        deleteHeld = false;
-
-                        if (!wasHeld &&
+                        if (!deleteHeld &&
                                 event.getAction() == MotionEvent.ACTION_UP) {
-                            deleteOne();
+                            deleteOne(false);
                         }
 
+                        deleteHeld = false;
                         return true;
                 }
 
@@ -645,7 +638,7 @@ public class JarvisImeService extends InputMethodService {
                 return;
 
             case "⌫":
-                deleteOne();
+                deleteOne(false);
                 return;
 
             case "?123":
@@ -751,12 +744,6 @@ public class JarvisImeService extends InputMethodService {
     }
 
     private void showImeDialog(AlertDialog dialog) {
-        dialog.setOnDismissListener(d -> {
-            if (keyboard != null) {
-                keyboard.invalidate();
-            }
-        });
-
         dialog.show();
 
         Window window = dialog.getWindow();
@@ -929,8 +916,10 @@ public class JarvisImeService extends InputMethodService {
         }
     }
 
-    private void deleteOne() {
-        vibrate();
+    private void deleteOne(boolean withVibration) {
+        if (withVibration) {
+            vibrate();
+        }
 
         InputConnection ic = getCurrentInputConnection();
 
@@ -953,7 +942,7 @@ public class JarvisImeService extends InputMethodService {
 
     @Override
     public void onDestroy() {
-        deleteRepeating = false;
+        deletePressed = false;
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
